@@ -8,12 +8,36 @@ import socket
 import time
 import threading
 import logging
+import netifaces
 
 UDP_IP = '0.0.0.0'
 PORT_TO_ANNOUNCE = 61991
 
 logger = logging.getLogger(__name__)
 
+def get_network_interface(interface='default',logger=None):
+    # Get the default gateway
+    gws = netifaces.gateways()
+    rt = False
+    if interface in gws:
+        gwd = gws[interface][netifaces.AF_INET]
+        logger.debug("gateway: {}={}".format(interface,gwd))
+        ifad = netifaces.ifaddresses(gwd[1])
+        rt = ifad[netifaces.AF_INET]
+        logger.debug("gateway->ifad: {}={}".format(gwd[1],rt))
+    else:
+        logger.error("No {} in gateways:{}".format(interface,gateways))
+    return rt
+
+def get_network_bcast(logger=None):
+    try:
+        iface = get_network_interface(logger=logger)
+        rt = iface[0]['broadcast']
+    except Exception as err:
+        logger.error('get_network_bcast: failed: {0}'.format(err))
+        rt = False
+    logger.info('get_network_bcast: Returning {0}'.format(rt))
+    return rt
 
 class Discovery:
 
@@ -22,7 +46,7 @@ class Discovery:
             try:
                 client_connection, client_address = listen_socket.accept()
             except (OSError) as err:
-                logger.debug("Listen socket closed {0}".format(err))
+                logger.info("Listen socket already closed? {0}".format(err))
                 return
             request = client_connection.recv(1024)
             if request:
@@ -50,6 +74,10 @@ class Discovery:
         return pairs
 
     def discover(self, scan_attempts, scan_interval):
+        # Get our broadcast address
+        bcast = get_network_bcast(logger=logger)
+        if bcast is False:
+            return
         # https://ruslanspivak.com/lsbaws-part1/
         listen_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -78,18 +106,23 @@ class Discovery:
 
         for scan in range(0, scan_attempts):
             try:
-                logger.debug('Pinging network on port %s', PORT_TO_ANNOUNCE)
-                ping_sock.sendto(MESSAGE, ('255.255.255.255', 5224))
+                logger.debug('Pinging network %s port %s', bcast, PORT_TO_ANNOUNCE)
+                ping_sock.sendto(MESSAGE, (bcast, 5224))
             except Exception as e:
                 logger.error('Error pinging network: %s', e)
 
             time.sleep(scan_interval)
-        
+
         # Close the socket
         ping_sock.close()
-        listen_socket.shutdown(socket.SHUT_RDWR)
-        listen_socket.close()
-        
+        try:
+            listen_socket.shutdown(socket.SHUT_RDWR)
+        except:
+            pass
+        try:
+            listen_socket.close()
+        except:
+            pass
         logger.info('Completed scan, %s hub(s) found.', len(hubs))
         return [hubs[h] for h in hubs]
 
